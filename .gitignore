@@ -1,0 +1,5 @@
+# local temp / editor files
+*.log
+Thumbs.db
+desktop.ini
+.vs/
