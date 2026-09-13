@@ -1,6 +1,3 @@
-# local settings with real subscription / tenant details - copy config.example.json instead
-config.json
-
 # local temp / editor files
 *.log
 Thumbs.db

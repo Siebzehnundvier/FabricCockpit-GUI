@@ -1,9 +1,0 @@
-{
-  "subscription": "",
-  "resourceGroup": "MyResourceGroup",
-  "capacityName": "mycapacity",
-  "sku": "F2",
-  "location": "Germany West Central",
-  "costAnalysisUrl": "",
-  "metricsAppUrl": ""
-}

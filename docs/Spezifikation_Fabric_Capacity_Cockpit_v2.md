@@ -1,6 +1,6 @@
 # Spezifikation: Fabric Capacity Cockpit v2
 
-**Zielordner:** `FabricAdministration`
+**Zielordner:** `FabricCockpit-GUI` (eigenes Repo; die VS-Code-Variante liegt getrennt in `FabricCockpit-VSCode`)
 **Adressat:** Claude Code
 **Stand:** 13.09.2026
 
@@ -438,3 +438,25 @@ weiterlaufen. Keine doppelte Azure-Logik.
 
 Diese Punkte bitte durch Ausführen und Nachlesen klären, nicht durch Annahmen. Wo
 sich eine Annahme nicht auflösen lässt, im Code kommentieren und hier vermerken.
+
+### Ergebnisse (13.09.2026, az 2.90.0, Extension microsoft-fabric 1.0.0b1)
+
+| Punkt | Befund | Konsequenz |
+|---|---|---|
+| Listen-Kommando `az fabric` | `az fabric capacity list` existiert (je Subscription) und liefert `state`, `sku.name`, `location`, `resourceGroup`, `provisioningState`. | Ersetzt `az resource list` und Resource Graph. Schleife über `az account list --all` (Enabled) → `az fabric capacity list --subscription`. Weg wird im Log vermerkt. |
+| Felder `az resource list` | Liefert `properties: null`, d. h. **kein** `state`; `location` nur als Kurzform (`germanywestcentral`). | Nicht verwendet. |
+| Erweiterung `resource-graph` | Auf dem Zielrechner nicht installiert. | Nicht benötigt (siehe oben). |
+| Statuswerte | Beobachtet: `Paused` → `Resuming` → `Active` und `Active` → `Pausing` → `Paused`; während des Übergangs `provisioningState: Updating`, danach `Succeeded`. Resume ~8-35 s, Pause ~12-18 s. | Polling endet bei Zielzustand `Active`/`Paused`; andere Werte werden angezeigt und weitergepollt. |
+| Pause/Resume-Aufruf | `az fabric capacity suspend/resume` (Extension, ARM `api-version=2023-11-01`). **Ohne** `--no-wait` blockiert die CLI selbst bis zum Zielzustand. | Aufruf mit `--no-wait`, Polling alle 5 s über `az fabric capacity show`. |
+| Fehlertexte bei abgelaufenem Token | Nicht live provozierbar. Mustererkennung großzügig: `az login`, `AADSTS`, `ExpiredToken`, `ExpiredAuthenticationToken`, `InvalidAuthenticationToken`, `re-authenticate`, `Interactive authentication is needed`, `refresh token`, `AuthenticationFailed`, `not logged in`, `token has expired`, `Authorization failed`. | `Test-AuthError` in `lib/Fabric-Common.ps1`; abgemeldeter Zustand getestet über leeres `AZURE_CONFIG_DIR`. |
+| PS 5.1 vs. PS 7 | Nur Windows PowerShell 5.1 getestet (Launcher nutzt `powershell.exe -STA`). Dateien sind bewusst ASCII-only, da PS 5.1 BOM-lose Dateien als ANSI liest. | Im Skript-Header vermerkt. |
+
+### Abweichungen von der Spezifikation (mit dem Auftraggeber abgestimmt)
+
+- **§1 / §9.4** entfallen: GUI und VS-Code-Variante sind seit der Repo-Trennung eigenständig; die GUI hat ihre Azure-Logik in `lib/`.
+- **§4.4** Kosten: die bestehende Abfrage filtert bereits auf die `ResourceId` der Kapazität (nicht RG-Summe). Beschriftung bleibt „Cost (MTD)"; nur der Fallback nennt die RG-Summe ausdrücklich.
+- **§9.1** `config.json` entfällt vollständig; `metricsAppUrl` liegt in `settings.json`. `costAnalysisUrl` entfällt, der Link führt auf die RG-Kostenanalyse der gewählten Kapazität.
+- **§9.2** Es gibt eine neue einzeilige Statuszeile; der Log bleibt dauerhaft sichtbar (nicht aufklappbar), mit „Copy log".
+- **§6.2** Kopfzeile zeigt Benutzer und Tenant; die Subscription steht in der Info-Karte der gewählten Kapazität.
+- **Sprache** der Oberfläche: Englisch (wie Bestand).
+
