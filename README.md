@@ -18,6 +18,9 @@ capacity (`Microsoft.Fabric/capacities`): **Status**, **Pause**, **Resume**,
 
 ## Configuration - `config.json`
 
+`config.json` is **not** versioned (it holds subscription / tenant details).
+Copy `config.example.json` to `config.json` once and fill in your values:
+
 ```json
 {
   "subscription": "My Azure subscription",   // empty = current default subscription from az login
@@ -55,7 +58,9 @@ enter a fixed subscription id or name (a name with spaces is fine).
 | `lib/Fabric-Common.ps1` | Config loading, `az` / login checks |
 | `lib/Fabric-Cost.ps1` | `Invoke-FabricCostQuery` (Cost Management REST, cache + 429 retry) |
 | `lib/Open-Links.ps1` | Builds and opens the portal / cost / metrics URLs |
-| `config.json` | Capacity settings (see above) |
+| `config.json` | Capacity settings (see above) - local, not versioned |
+| `config.example.json` | Template for `config.json` |
+| `docs/` | Specification documents |
 
 ## Notes
 

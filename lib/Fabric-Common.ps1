@@ -8,7 +8,7 @@ function Get-FabricConfig {
     $root = Split-Path -Parent $PSScriptRoot
     $configPath = Join-Path $root 'config.json'
     if (-not (Test-Path $configPath)) {
-        throw "config.json not found at: $configPath"
+        throw "config.json not found at: $configPath`nCopy config.example.json to config.json and fill in your values."
     }
     $cfg = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
     foreach ($k in 'resourceGroup','capacityName') {
