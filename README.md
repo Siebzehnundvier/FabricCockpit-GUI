@@ -25,7 +25,14 @@ No credentials are stored anywhere - sign-in is delegated to `az login`.
 
 ## Start
 
-Double-click `Start-Cockpit.cmd`.
+Double-click `Start-Cockpit.cmd` (or `Start-Cockpit.vbs`). No console window stays
+open: the `.cmd` hands over to the VBScript launcher, which starts PowerShell without
+a console, and the script hides any console it might still have inherited.
+
+The cockpit puts an icon into the notification area (tray). On Windows 11 new tray
+icons land in the **overflow** first - click the `^` arrow next to the clock to see
+it, or drag it onto the taskbar (Settings > Personalization > Taskbar > *Other system
+tray icons* to pin it permanently).
 
 ## What the window does
 
@@ -102,7 +109,8 @@ Created on first start; no secrets.
 | Path | Purpose |
 |------|---------|
 | `Fabric-Cockpit.ps1` | The WinForms window (UI, background runspaces, polling, auto-pause, tray icon) |
-| `Start-Cockpit.cmd` | Launcher (PowerShell 5.1, STA, hidden console) |
+| `Start-Cockpit.cmd` | Launcher for double-click; delegates to the `.vbs` |
+| `Start-Cockpit.vbs` | Launcher without a console window (PowerShell 5.1, STA) |
 | `lib/Fabric-Common.ps1` | Settings, `az` calls (account, capacity list/status/suspend/resume), auth-error detection, links |
 | `lib/Fabric-Cost.ps1` | `Invoke-FabricCostQuery` (Cost Management REST, cache + 429 retry) |
 | `docs/` | Specification v2 incl. verification results |

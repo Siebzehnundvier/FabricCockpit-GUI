@@ -15,6 +15,13 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# Hide the console window this script may have inherited (belt and braces next to the launcher).
+Add-Type -Name ConsoleWin -Namespace Cockpit -MemberDefinition @"
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+[DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+"@
+try { $hCon = [Cockpit.ConsoleWin]::GetConsoleWindow(); if ($hCon -ne [IntPtr]::Zero) { [void][Cockpit.ConsoleWin]::ShowWindow($hCon, 0) } } catch { }
+
 $libDir   = Join-Path $PSScriptRoot 'lib'
 $common   = Join-Path $libDir 'Fabric-Common.ps1'
 $costFunc = Join-Path $libDir 'Fabric-Cost.ps1'
