@@ -10,6 +10,7 @@
 
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
+$CockpitVersion = '1.0.0'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -835,7 +836,7 @@ $TM.ui.Add_Tick({
 $form.Add_Shown({
     $ST.loading = $true; $UI.cmbAutoPause.SelectedIndex = 0; $ST.loading = $false
     Show-Card $null
-    Write-Log ('Settings: ' + (Get-CockpitSettingsPath))
+    Write-Log ('Fabric Capacity Cockpit ' + $CockpitVersion + ' - settings: ' + (Get-CockpitSettingsPath))
     $cache = @($ST.settings.capacityCache)
     $lc = $ST.settings.lastCapacity
     $lastKey = if ($lc -and $lc.name) { ('{0}|{1}|{2}' -f $lc.subscriptionId, $lc.resourceGroup, $lc.name).ToLowerInvariant() } else { '' }
