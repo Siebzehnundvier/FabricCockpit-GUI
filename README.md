@@ -125,6 +125,11 @@ Created on first start; no secrets.
   until it is resumed.
 - The scripts are ASCII-only on purpose (Windows PowerShell 5.1 reads BOM-less
   files as ANSI); special glyphs are built with `[char]`.
+- PowerShell variable names are **case-insensitive**: `$st` and `$ST` are the same
+  variable. The GUI therefore uses multi-letter names for its containers (`$ST`
+  state, `$UI` controls, `$TM` timers, `$ICO` icons) and avoids single-letter
+  loop variables that could collide. A quick collision check:
+  `grep -oE '\$[A-Za-z_][A-Za-z0-9_]*' Fabric-Cockpit.ps1 | sort -u | awk '{k=tolower($0); if (k in s && s[k]!=$0) print s[k]" <-> "$0; s[k]=$0}'`
 
 ## Related
 
