@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 # Fabric Capacity Cockpit - WinForms GUI for pay-as-you-go Fabric capacities (F-SKU).
 # Features: capacity picker across all subscriptions, sign-in status + az login,
-# pause/resume with state polling, auto-pause after cockpit inactivity, MTD cost.
+# pause/resume with state polling, auto-pause timer, MTD cost, tray icon with menu.
 # Tested on Windows PowerShell 5.1 only (the launcher uses powershell.exe -STA).
 # Uses .\lib\Fabric-Common.ps1 (settings, az calls) and .\lib\Fabric-Cost.ps1 (cost query).
 # Settings live in %APPDATA%\FabricCockpit\settings.json (no secrets).
@@ -39,7 +39,6 @@ $chCheck = [string][char]0x2714   # heavy check mark
 $chCross = [string][char]0x2716   # heavy multiplication x
 $chDash  = [string][char]0x2014   # em dash
 $chDot   = [string][char]0x00B7   # middle dot
-$chInfo  = [string][char]0x2139   # information source
 
 # ---------- state ----------
 $S = @{
@@ -52,19 +51,22 @@ $S = @{
     statusBusy  = $false
     listBusy    = $false
     loginBusy   = $false
-    loading     = $false     # combo is being repopulated
+    loading     = $false     # combos are being repopulated programmatically
     op          = ''         # '' | 'pause' | 'resume'
     opTarget    = ''
     opVerb      = ''
     opStart     = (Get-Date)
     opLastState = ''
     pollBusy    = $false
-    idleSince   = (Get-Date)
-    autoPauseOff = $false    # 'disable for today' (until restart)
-    apValues    = @(0,15,30,60,120)   # minutes per auto-pause combo index
+    apMinutes   = 0          # auto-pause span chosen (0 = off)
+    apDeadline  = $null      # [datetime] when the capacity gets paused
+    apValues    = @(0,15,30,60,120)
+    exiting     = $false     # set by tray 'Exit'; otherwise closing hides to the tray
+    trayHintShown = $false
 }
 $U = @{}   # controls
 $T = @{}   # timers
+$I = @{}   # icons
 
 # ---------- palette (matches the post graphic) ----------
 function C([int]$r,[int]$g,[int]$b){ [System.Drawing.Color]::FromArgb($r,$g,$b) }
@@ -79,6 +81,8 @@ $clBtnTxt = C 42 52 65
 $clGreen  = C 21 128 61
 $clAmber  = C 180 83 9
 $clRed    = C 178 34 34
+$clBlue   = C 37 99 235
+$clGray   = C 140 148 158
 $clWarnBg = C 255 243 205
 $clLogBg  = C 17 17 17
 $clLogFg  = C 212 212 212
@@ -90,6 +94,12 @@ $fBtn    = New-Object System.Drawing.Font('Segoe UI', 9.75, [System.Drawing.Font
 $fSmall  = New-Object System.Drawing.Font('Segoe UI', 9)
 $fMono   = New-Object System.Drawing.Font('Consolas', 9)
 
+# unified geometry
+$M   = 16    # outer margin
+$BW  = 150   # standard button width
+$BH  = 30    # standard button height
+$GAP = 8     # gap between buttons
+
 # ---------- work blocks (run in background runspaces) ----------
 $wAccount = { param($lib) . $lib; $ext = Ensure-FabricExtension; [pscustomobject]@{ Account = (Get-AzAccountInfo); ExtOk = $ext } }
 $wLogin   = { param($lib) . $lib; $r = Invoke-Az @('login','-o','none','--only-show-errors'); [pscustomobject]@{ Exit = $r.Exit; Out = $r.Out; Account = (Get-AzAccountInfo) } }
@@ -98,22 +108,46 @@ $wStatus  = { param($lib,$sub,$rg,$name,$subName) . $lib; Get-FabricCapacityStat
 $wAction  = { param($lib,$action,$sub,$rg,$name) . $lib; Invoke-FabricCapacityAction -Action $action -SubscriptionId $sub -ResourceGroup $rg -CapacityName $name }
 $wCost    = { param($costPath,$sub,$rg,$name,$tempDir) . $costPath; Invoke-FabricCostQuery -Subscription $sub -ResourceGroup $rg -CapacityName $name -CacheMinutes 10 -TempDir $tempDir }
 
+# ---------- icons (state dots for tray + window) ----------
+function New-DotIcon($color) {
+    $bmp = New-Object System.Drawing.Bitmap 16,16
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.Clear([System.Drawing.Color]::Transparent)
+    $br = New-Object System.Drawing.SolidBrush $color
+    $g.FillEllipse($br, 1, 1, 13, 13); $br.Dispose()
+    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(110, 0, 0, 0))
+    $g.DrawEllipse($pen, 1, 1, 13, 13); $pen.Dispose()
+    $g.Dispose()
+    $ico = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+    $bmp.Dispose()
+    return $ico
+}
+$I.active  = New-DotIcon $clGreen
+$I.paused  = New-DotIcon $clAmber
+$I.busy    = New-DotIcon $clBlue
+$I.unknown = New-DotIcon $clGray
+$I.error   = New-DotIcon $clRed
+
 # ---------- form ----------
 $form = New-Object System.Windows.Forms.Form
 $form.Text          = 'Fabric Capacity Cockpit ' + $chDash + ' Pay-as-you-go (F-SKU)'
-$form.ClientSize    = New-Object System.Drawing.Size(720, 760)
-$form.MinimumSize   = New-Object System.Drawing.Size(736, 700)
+$form.ClientSize    = New-Object System.Drawing.Size(720, 712)
+$form.MinimumSize   = New-Object System.Drawing.Size(736, 660)
 $form.StartPosition = 'CenterScreen'
 $form.BackColor     = $clBg
 $form.Font          = $fCap
+$form.Icon          = $I.unknown
 
 $root = New-Object System.Windows.Forms.TableLayoutPanel
-$root.Dock = 'Fill'; $root.ColumnCount = 1; $root.RowCount = 10
+$root.Dock = 'Fill'; $root.ColumnCount = 1
 $root.Padding = New-Object System.Windows.Forms.Padding(0)
 [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 $form.Controls.Add($root)
 
-$rowHeights = @(36, 36, 252, 44, 0, 42, 26, 26, -1, 56)   # -1 = fill; banner row (index 4) is 0 until shown
+# rows: header, picker, card, actions, banner (0 until shown), details, log head, log (fill), footer
+$rowHeights = @(58, 46, 254, 106, 0, 68, 26, -1, 56)
+$root.RowCount = $rowHeights.Count
 $rows = @()
 for ($i = 0; $i -lt $rowHeights.Count; $i++) {
     $h = $rowHeights[$i]
@@ -124,8 +158,8 @@ for ($i = 0; $i -lt $rowHeights.Count; $i++) {
     $root.Controls.Add($p, 0, $i)
     $rows += $p
 }
-$pnlHeader = $rows[0]; $pnlPick = $rows[1]; $pnlMain = $rows[2]; $pnlActions = $rows[3]; $pnlBanner = $rows[4]
-$pnlLinks = $rows[5]; $pnlStatus = $rows[6]; $pnlLogHead = $rows[7]; $pnlLog = $rows[8]; $pnlFooter = $rows[9]
+$pnlHeader = $rows[0]; $pnlPick = $rows[1]; $pnlCard = $rows[2]; $pnlActions = $rows[3]; $pnlBanner = $rows[4]
+$pnlDetails = $rows[5]; $pnlLogHead = $rows[6]; $pnlLog = $rows[7]; $pnlFooter = $rows[8]
 
 # ---------- control factories ----------
 function New-Label($parent,[string]$text,[int]$x,[int]$y,[int]$w,[int]$h,$fore,$font,[string]$anchor='Top,Left') {
@@ -144,135 +178,155 @@ function New-FlatButton($parent,[string]$text,[int]$x,[int]$y,[int]$w,[int]$h,$f
     $b.Font = $fBtn; $b.Cursor = [System.Windows.Forms.Cursors]::Hand; $b.Anchor = $anchor
     $parent.Controls.Add($b); return $b
 }
+function New-Heading($parent,[string]$text,[int]$y) {
+    return (New-Label $parent $text $M $y 400 22 $clMuted $fLegend)
+}
 
 $tt = New-Object System.Windows.Forms.ToolTip
 $tt.AutoPopDelay = 15000
 
-# ---------- row 0: sign-in header ----------
-$U.lblAccount = New-Label $pnlHeader ('Checking sign-in ' + $chDash + ' please wait ...') 16 6 540 24 $clMuted $fVal 'Top,Left,Right'
-$U.btnLogin   = New-FlatButton $pnlHeader 'Sign in' 570 5 134 27 $clBtnTxt 'Top,Right'
+# ---------- row 0: sign-in header band ----------
+$pnlHeader.BackColor = $clCard
+$pnlHeader.Add_Paint({ param($sender,$e)
+    $pen = New-Object System.Drawing.Pen $clBorder
+    $e.Graphics.DrawLine($pen, 0, $sender.Height-1, $sender.Width, $sender.Height-1)
+    $pen.Dispose()
+})
+$U.lblAccount = New-Label $pnlHeader ('Checking sign-in ' + $chDash + ' please wait ...') $M 14 520 $BH $clMuted $fVal 'Top,Left,Right'
+$U.btnLogin   = New-FlatButton $pnlHeader 'Sign in' (720-$M-$BW) 14 $BW $BH $clBtnTxt 'Top,Right'
 $tt.SetToolTip($U.btnLogin, "Runs 'az login' - a browser window opens. Also use this to switch tenant/account.")
 
 # ---------- row 1: capacity picker ----------
-New-Label $pnlPick 'Capacity' 16 6 80 24 $clMuted $fLegend | Out-Null
+New-Label $pnlPick 'Capacity' $M 12 80 24 $clMuted $fLegend | Out-Null
 $U.cmb = New-Object System.Windows.Forms.ComboBox
 $U.cmb.DropDownStyle = 'DropDownList'; $U.cmb.Font = $fCap
-$U.cmb.Location = New-Object System.Drawing.Point(96, 5); $U.cmb.Size = New-Object System.Drawing.Size(462, 26)
+$U.cmb.Location = New-Object System.Drawing.Point(96, 11); $U.cmb.Size = New-Object System.Drawing.Size((720-96-$M-$BW-$GAP), 26)
 $U.cmb.Anchor = 'Top,Left,Right'
 $pnlPick.Controls.Add($U.cmb)
-$U.btnReload = New-FlatButton $pnlPick 'Reload list' 570 5 134 27 $clBtnTxt 'Top,Right'
+$U.btnReload = New-FlatButton $pnlPick 'Reload list' (720-$M-$BW) 9 $BW $BH $clBtnTxt 'Top,Right'
 $tt.SetToolTip($U.btnReload, 'Re-query all enabled subscriptions for Fabric capacities')
 $tt.SetToolTip($U.cmb, 'Name ' + $chDash + ' Subscription / Resource group')
 
-# ---------- row 2: info card + right column ----------
+# ---------- row 2: info card (full width; refresh controls in its header) ----------
 $card = New-Object System.Windows.Forms.Panel
-$card.Location = New-Object System.Drawing.Point(16,6); $card.Size = New-Object System.Drawing.Size(430,240)
-$card.BackColor = $clCard
-$card.Add_Paint({ param($s,$e)
+$card.Location = New-Object System.Drawing.Point($M, 4); $card.Size = New-Object System.Drawing.Size((720-2*$M), 246)
+$card.BackColor = $clCard; $card.Anchor = 'Top,Left,Right'
+$card.Add_Paint({ param($sender,$e)
     $pen = New-Object System.Drawing.Pen $clBorder
-    $e.Graphics.DrawRectangle($pen, 0, 0, $s.Width-1, $s.Height-1)
+    $e.Graphics.DrawRectangle($pen, 0, 0, $sender.Width-1, $sender.Height-1)
     $pen.Dispose()
 })
-$pnlMain.Controls.Add($card)
-New-Label $card 'Capacity Info' 12 6 200 22 $clLegend $fLegend | Out-Null
+$pnlCard.Controls.Add($card)
+New-Label $card 'Capacity Info' 12 10 200 22 $clLegend $fLegend | Out-Null
+
+$U.btnRefresh = New-FlatButton $card 'Refresh' ($card.Width-12-$BW) 8 $BW $BH $clBtnTxt 'Top,Right'
+$tt.SetToolTip($U.btnRefresh, 'Reload status and cost of the selected capacity')
+$U.chkAuto = New-Object System.Windows.Forms.CheckBox
+$U.chkAuto.Text = ('Auto-refresh ({0}s)' -f [int]$S.settings.autoRefreshSeconds)
+$U.chkAuto.ForeColor = $clInk; $U.chkAuto.Font = $fCap
+$U.chkAuto.Location = New-Object System.Drawing.Point(($card.Width-12-$BW-$GAP-160), 11); $U.chkAuto.Size = New-Object System.Drawing.Size(160, 24)
+$U.chkAuto.Anchor = 'Top,Right'
+$card.Controls.Add($U.chkAuto)
 
 function New-CardRow([string]$caption,[int]$y) {
     New-Label $card $caption 14 $y 128 22 $clMuted $fCap | Out-Null
-    return (New-Label $card '' 148 $y 270 22 $clInk $fVal)
+    return (New-Label $card '' 148 $y 300 22 $clInk $fVal)
 }
-$y = 32; $step = 25
+$y = 42; $step = 25
 $U.lblName   = New-CardRow 'Name'           $y; $y += $step
 $U.lblSub    = New-CardRow 'Subscription'   $y; $y += $step
 $U.lblRg     = New-CardRow 'Resource group' $y; $y += $step
 $U.lblRegion = New-CardRow 'Region'         $y; $y += $step
 $U.lblSku    = New-CardRow 'SKU'            $y; $y += $step
-$U.lblStatus = New-CardRow 'Status'         $y; $y += $step
+$U.lblStatus = New-CardRow 'Status'         $y
+$U.lblStatus.Size = New-Object System.Drawing.Size(160, 22)
+$U.lblUpdated = New-Label $card '' 310 $y 300 22 $clMuted $fSmall
+$y += $step
 $U.lblProv   = New-CardRow 'Provisioning'   $y; $y += $step
 $U.lblCost   = New-CardRow 'Cost (MTD)'     $y; $y += $step
 $tt.SetToolTip($U.lblCost, 'Month-to-date cost of this capacity (Cost Management, resource-level). Data has latency of up to ~24-48h.')
 
-# right column
-$U.btnRefresh = New-FlatButton $pnlMain 'Refresh' 462 6 242 30 $clBtnTxt 'Top,Left,Right'
-$tt.SetToolTip($U.btnRefresh, 'Reload status and cost of the selected capacity')
-
-$U.chkAuto = New-Object System.Windows.Forms.CheckBox
-$U.chkAuto.Text = ('Auto-refresh ({0}s)' -f [int]$S.settings.autoRefreshSeconds)
-$U.chkAuto.ForeColor = $clInk; $U.chkAuto.Font = $fCap
-$U.chkAuto.Location = New-Object System.Drawing.Point(462,44); $U.chkAuto.Size = New-Object System.Drawing.Size(242,24)
-$U.chkAuto.Anchor = 'Top,Left,Right'
-$pnlMain.Controls.Add($U.chkAuto)
-
-$U.lblUpdated = New-Label $pnlMain 'Updated: -' 462 72 242 22 $clMuted $fCap 'Top,Left,Right'
-
-New-Label $pnlMain 'Auto-pause on inactivity' 462 110 242 22 $clMuted $fLegend 'Top,Left,Right' | Out-Null
-$U.cmbAutoPause = New-Object System.Windows.Forms.ComboBox
-$U.cmbAutoPause.DropDownStyle = 'DropDownList'; $U.cmbAutoPause.Font = $fCap
-$U.cmbAutoPause.Location = New-Object System.Drawing.Point(462,134); $U.cmbAutoPause.Size = New-Object System.Drawing.Size(150,26)
-[void]$U.cmbAutoPause.Items.AddRange(@('Off','15 minutes','30 minutes','60 minutes','120 minutes'))
-$pnlMain.Controls.Add($U.cmbAutoPause)
-$U.lblApInfo = New-Label $pnlMain $chInfo 618 134 26 26 $clMuted $fVal
-$U.lblApInfo.TextAlign = 'MiddleCenter'; $U.lblApInfo.Cursor = [System.Windows.Forms.Cursors]::Help
-$apHint = 'Counts the time without any interaction with this window. Load on the capacity (e.g. running refreshes, notebooks, reports) is NOT detected.'
-$tt.SetToolTip($U.lblApInfo, $apHint); $tt.SetToolTip($U.cmbAutoPause, $apHint)
-$U.lblApNote = New-Label $pnlMain 'Only counts cockpit inactivity, not capacity load.' 462 164 242 40 $clMuted $fSmall 'Top,Left,Right'
-$U.lblApNote.TextAlign = 'TopLeft'
-
-# ---------- row 3: actions + progress ----------
-New-Label $pnlActions 'Capacity actions:' 16 12 130 22 $clMuted $fLegend | Out-Null
-$U.btnResume = New-FlatButton $pnlActions 'Resume' 150 8 110 30 $clGreen
-$U.btnPause  = New-FlatButton $pnlActions 'Pause'  268 8 110 30 $clAmber
+# ---------- row 3: capacity actions ----------
+New-Heading $pnlActions 'Capacity actions:' 6 | Out-Null
+$ay = 32
+$U.btnResume = New-FlatButton $pnlActions 'Resume' $M $ay $BW $BH $clGreen
+$U.btnPause  = New-FlatButton $pnlActions 'Pause'  ($M+$BW+$GAP) $ay $BW $BH $clAmber
 
 $U.pnlOp = New-Object System.Windows.Forms.Panel
-$U.pnlOp.Location = New-Object System.Drawing.Point(392, 6); $U.pnlOp.Size = New-Object System.Drawing.Size(312, 34)
+$U.pnlOp.Location = New-Object System.Drawing.Point(($M+2*($BW+$GAP)), ($ay-2)); $U.pnlOp.Size = New-Object System.Drawing.Size((720-$M-($M+2*($BW+$GAP))), 34)
 $U.pnlOp.Anchor = 'Top,Left,Right'; $U.pnlOp.Visible = $false
 $pnlActions.Controls.Add($U.pnlOp)
+$U.lblOp = New-Label $U.pnlOp 'Working ...' 0 0 ($U.pnlOp.Width-120-$GAP) 18 $clInk $fVal 'Top,Left,Right'
 $U.prg = New-Object System.Windows.Forms.ProgressBar
 $U.prg.Style = 'Marquee'; $U.prg.MarqueeAnimationSpeed = 30
-$U.prg.Location = New-Object System.Drawing.Point(0, 22); $U.prg.Size = New-Object System.Drawing.Size(180, 8)
+$U.prg.Location = New-Object System.Drawing.Point(0, 22); $U.prg.Size = New-Object System.Drawing.Size(($U.pnlOp.Width-120-$GAP), 8); $U.prg.Anchor = 'Top,Left,Right'
 $U.pnlOp.Controls.Add($U.prg)
-$U.lblOp = New-Label $U.pnlOp 'Working ...' 0 0 180 20 $clInk $fVal
-$U.btnStopWait = New-FlatButton $U.pnlOp 'Stop waiting' 190 2 122 30 $clBtnTxt 'Top,Right'
+$U.btnStopWait = New-FlatButton $U.pnlOp 'Stop waiting' ($U.pnlOp.Width-120) 2 120 $BH $clBtnTxt 'Top,Right'
 $tt.SetToolTip($U.btnStopWait, 'Stops only the polling in this window. The operation in Azure continues.')
+
+$ay2 = $ay + $BH + 10
+New-Label $pnlActions 'Auto-pause' $M $ay2 90 26 $clMuted $fCap | Out-Null
+$U.cmbAutoPause = New-Object System.Windows.Forms.ComboBox
+$U.cmbAutoPause.DropDownStyle = 'DropDownList'; $U.cmbAutoPause.Font = $fCap
+$U.cmbAutoPause.Location = New-Object System.Drawing.Point(($M+90), ($ay2+1)); $U.cmbAutoPause.Size = New-Object System.Drawing.Size(($BW+$GAP+$BW-90), 26)
+[void]$U.cmbAutoPause.Items.AddRange(@('Off','in 15 minutes','in 30 minutes','in 60 minutes','in 120 minutes'))
+$pnlActions.Controls.Add($U.cmbAutoPause)
+$U.lblApCountdown = New-Label $pnlActions '' ($M+2*($BW+$GAP)) $ay2 (720-$M-($M+2*($BW+$GAP))) 26 $clMuted $fCap 'Top,Left,Right'
+$apHint = 'Pauses the selected capacity when the timer elapses - regardless of what happens in the cockpit or on the capacity. The cockpit only has to keep running (window or tray). One-shot: after pausing, the setting returns to Off.'
+$tt.SetToolTip($U.cmbAutoPause, $apHint); $tt.SetToolTip($U.lblApCountdown, $apHint)
 
 # ---------- row 4: auto-pause warning banner (hidden until 2 min before) ----------
 $pnlBanner.BackColor = $clWarnBg; $pnlBanner.Visible = $false
-$U.lblBanner = New-Label $pnlBanner 'Auto-pause in 02:00' 16 8 220 24 $clAmber $fVal
-$U.btnApNow    = New-FlatButton $pnlBanner 'Pause now'          246 5 120 27 $clAmber
-$U.btnApExtend = New-FlatButton $pnlBanner 'Extend'             374 5 100 27 $clBtnTxt
-$U.btnApOff    = New-FlatButton $pnlBanner 'Disable for today'  482 5 150 27 $clBtnTxt
-$tt.SetToolTip($U.btnApExtend, 'Resets the inactivity timer to the full value')
-$tt.SetToolTip($U.btnApOff, 'Turns auto-pause off until the cockpit is restarted')
+$U.lblBanner   = New-Label $pnlBanner 'Auto-pause in 02:00' $M 7 220 26 $clAmber $fVal
+$bx = 720 - $M - 3*120 - 2*$GAP
+$U.btnApNow    = New-FlatButton $pnlBanner 'Pause now' $bx 5 120 $BH $clAmber 'Top,Right'
+$U.btnApExtend = New-FlatButton $pnlBanner 'Extend'    ($bx+120+$GAP) 5 120 $BH $clBtnTxt 'Top,Right'
+$U.btnApCancel = New-FlatButton $pnlBanner 'Cancel'    ($bx+2*(120+$GAP)) 5 120 $BH $clBtnTxt 'Top,Right'
+$tt.SetToolTip($U.btnApExtend, 'Postpones the auto-pause by the chosen span')
+$tt.SetToolTip($U.btnApCancel, 'Cancels the auto-pause timer (setting returns to Off)')
 
-# ---------- row 5: links ----------
-New-Label $pnlLinks 'Open:' 16 10 50 22 $clMuted $fLegend | Out-Null
-$U.btnPortal  = New-FlatButton $pnlLinks 'Capacity Overview'  70 6 168 30 $clBtnTxt
-$U.btnCostA   = New-FlatButton $pnlLinks 'Cost Analysis (RG)' 246 6 168 30 $clBtnTxt
-$U.btnMetrics = New-FlatButton $pnlLinks 'Metrics App'        422 6 130 30 $clBtnTxt
+# ---------- row 5: details / links ----------
+New-Heading $pnlDetails 'Click here for details:' 6 | Out-Null
+$dy = 32
+$U.btnPortal  = New-FlatButton $pnlDetails 'Capacity Overview'  $M $dy $BW $BH $clBtnTxt
+$U.btnCostA   = New-FlatButton $pnlDetails 'Cost Analysis (RG)' ($M+$BW+$GAP) $dy $BW $BH $clBtnTxt
+$U.btnMetrics = New-FlatButton $pnlDetails 'Metrics App'        ($M+2*($BW+$GAP)) $dy $BW $BH $clBtnTxt
 $tt.SetToolTip($U.btnPortal,  'Azure portal: overview page of the selected capacity')
 $tt.SetToolTip($U.btnCostA,   'Azure portal: cost analysis scoped to the resource group of the selected capacity')
 $tt.SetToolTip($U.btnMetrics, 'Fabric Capacity Metrics app (metricsAppUrl in settings.json) or the Power BI Apps page')
 
-# ---------- row 6: status line ----------
-$pnlStatus.Padding = New-Object System.Windows.Forms.Padding(16,0,16,0)
-$U.lblStatusLine = New-Label $pnlStatus '' 0 0 10 10 $clMuted $fSmall
-$U.lblStatusLine.Dock = 'Fill'
-
-# ---------- row 7/8: log ----------
-New-Label $pnlLogHead 'Log' 16 2 60 22 $clMuted $fLegend | Out-Null
-$U.btnCopyLog = New-FlatButton $pnlLogHead 'Copy log' 604 0 100 24 $clBtnTxt 'Top,Right'
+# ---------- row 6/7: log ----------
+New-Heading $pnlLogHead 'Log' 2 | Out-Null
+$U.btnCopyLog = New-FlatButton $pnlLogHead 'Copy log' (720-$M-100) 0 100 24 $clBtnTxt 'Top,Right'
 $U.btnCopyLog.Font = $fSmall
 $U.txtLog = New-Object System.Windows.Forms.TextBox
 $U.txtLog.Multiline = $true; $U.txtLog.ScrollBars = 'Vertical'; $U.txtLog.ReadOnly = $true
 $U.txtLog.BorderStyle = 'FixedSingle'; $U.txtLog.BackColor = $clLogBg; $U.txtLog.ForeColor = $clLogFg; $U.txtLog.Font = $fMono
 $U.txtLog.Dock = 'Fill'
-$pnlLog.Padding = New-Object System.Windows.Forms.Padding(16,0,16,0)
+$pnlLog.Padding = New-Object System.Windows.Forms.Padding($M, 0, $M, 0)
 $pnlLog.Controls.Add($U.txtLog)
 
-# ---------- row 9: pay-as-you-go footer ----------
+# ---------- row 8: pay-as-you-go footer ----------
 $U.lblFooter = New-Label $pnlFooter ('Designed for F-SKUs with pay-as-you-go billing. Pausing saves the compute cost; OneLake storage is still billed. ' +
     'With an existing reservation, pausing yields no savings ' + $chDash + ' this tool cannot detect reservations.') 0 0 10 10 $clMuted $fSmall
 $U.lblFooter.TextAlign = 'TopLeft'; $U.lblFooter.Dock = 'Fill'
-$pnlFooter.Padding = New-Object System.Windows.Forms.Padding(16,4,16,4)
+$pnlFooter.Padding = New-Object System.Windows.Forms.Padding($M, 6, $M, 4)
+
+# ---------- tray ----------
+$U.tray = New-Object System.Windows.Forms.NotifyIcon
+$U.tray.Icon = $I.unknown
+$U.tray.Text = 'Fabric Capacity Cockpit'
+$U.menu = New-Object System.Windows.Forms.ContextMenuStrip
+$U.menu.Font = $fCap
+$U.miOpen   = $U.menu.Items.Add('Open cockpit')
+[void]$U.menu.Items.Add('-')
+$U.miResume = $U.menu.Items.Add('Resume')
+$U.miPause  = $U.menu.Items.Add('Pause')
+[void]$U.menu.Items.Add('-')
+$U.miExit   = $U.menu.Items.Add('Exit')
+$U.miOpen.Font = $fVal
+$U.tray.ContextMenuStrip = $U.menu
+$U.tray.Visible = $true
 
 # ---------- helpers ----------
 function Format-Elapsed([timespan]$ts) { return ('{0:00}:{1:00}' -f [int][math]::Floor($ts.TotalMinutes), $ts.Seconds) }
@@ -282,12 +336,26 @@ function Write-Log([string]$msg) {
     if ($U.txtLog.TextLength -gt 400000) { $U.txtLog.Text = $U.txtLog.Text.Substring(200000) }
     $U.txtLog.AppendText("[$ts] $msg`r`n")
 }
-function Set-Status([string]$text,[string]$kind='info') {
-    $U.lblStatusLine.Text = $text
-    $U.lblStatusLine.ForeColor = switch ($kind) { 'ok' { $clGreen } 'warn' { $clAmber } 'error' { $clRed } default { $clMuted } }
-}
 function Get-CapKey($c) { return ('{0}|{1}|{2}' -f $c.subscriptionId, $c.resourceGroup, $c.name).ToLowerInvariant() }
-function Reset-Idle { $S.idleSince = Get-Date }
+
+function Update-Tray {
+    $st = $S.status
+    $ico = $I.unknown
+    if (-not $S.loggedIn)         { $ico = $I.error }
+    elseif ($S.op)                { $ico = $I.busy }
+    elseif ($st -eq 'Active')     { $ico = $I.active }
+    elseif ($st -eq 'Paused')     { $ico = $I.paused }
+    elseif ($st)                  { $ico = $I.busy }
+    $U.tray.Icon = $ico; $form.Icon = $ico
+    $name = if ($S.selected) { $S.selected.name } else { 'no capacity' }
+    $line = if (-not $S.loggedIn) { 'not signed in' } elseif ($S.op) { $S.opVerb + ' ...' } elseif ($st) { $st } else { 'unknown' }
+    if ($S.apDeadline) { $line += (' ' + $chDot + ' auto-pause {0:HH:mm}' -f $S.apDeadline) }
+    $txt = 'Fabric Cockpit ' + $chDash + ' ' + $name + ': ' + $line
+    if ($txt.Length -gt 63) { $txt = $txt.Substring(0, 63) }
+    $U.tray.Text = $txt
+    $U.miResume.Enabled = $U.btnResume.Enabled
+    $U.miPause.Enabled  = $U.btnPause.Enabled
+}
 
 function Update-Controls {
     $li = [bool]$S.loggedIn; $sel = ($null -ne $S.selected); $op = [bool]$S.op
@@ -298,9 +366,10 @@ function Update-Controls {
     $U.btnRefresh.Enabled = $li -and $sel -and -not $S.statusBusy -and -not $op
     $U.btnResume.Enabled  = $li -and $sel -and -not $op
     $U.btnPause.Enabled   = $li -and $sel -and -not $op
-    $U.cmbAutoPause.Enabled = $li
+    $U.cmbAutoPause.Enabled = $li -and $sel
     foreach ($b in @($U.btnPortal,$U.btnCostA,$U.btnMetrics)) { $b.Enabled = $sel }
     $U.pnlOp.Visible = $op
+    Update-Tray
 }
 
 function Show-Banner([bool]$on) {
@@ -310,8 +379,9 @@ function Show-Banner([bool]$on) {
 
 function Show-Card($c) {
     if ($null -eq $c) {
-        foreach ($l in @($U.lblName,$U.lblSub,$U.lblRg,$U.lblRegion,$U.lblSku,$U.lblStatus,$U.lblProv,$U.lblCost)) { $l.Text = '' }
+        foreach ($l in @($U.lblName,$U.lblSub,$U.lblRg,$U.lblRegion,$U.lblSku,$U.lblStatus,$U.lblProv,$U.lblCost,$U.lblUpdated)) { $l.Text = '' }
         $U.lblStatus.ForeColor = $clInk; $S.status = ''
+        Update-Tray
         return
     }
     $U.lblName.Text   = $c.name
@@ -321,15 +391,20 @@ function Show-Card($c) {
     $U.lblSku.Text    = $c.sku
     $st = if ($c.state) { [string]$c.state } else { '(unknown)' }
     $U.lblStatus.Text = $st
-    $U.lblStatus.ForeColor = if ($st -eq 'Active') { $clGreen } elseif ($st -eq 'Paused') { $clAmber } else { $clMuted }
+    $U.lblStatus.ForeColor = if ($st -eq 'Active') { $clGreen } elseif ($st -eq 'Paused') { $clAmber } else { $clBlue }
     $U.lblProv.Text   = if ($c.provisioningState) { $c.provisioningState } else { '(unknown)' }
     $S.status = $st
+    Update-Tray
 }
+function Set-Updated([string]$text) { $U.lblUpdated.Text = $text }
 
 function Set-LoggedIn($acct) {
     $S.loggedIn = $true; $S.account = $acct
-    $U.lblAccount.Text = ('{0} {1} {2} Tenant {3}' -f $chCheck, $acct.User, $chDot, $acct.TenantId)
+    $shortTenant = ($acct.TenantId -split '-')[0]
+    $U.lblAccount.Text = ('{0} {1} {2} Tenant {3}' -f $chCheck, $acct.User, $chDot, $shortTenant)
     $U.lblAccount.ForeColor = $clGreen
+    $tip = ('Tenant {0}' + [char]10 + 'Default subscription: {1}') -f $acct.TenantId, $acct.SubscriptionName
+    $tt.SetToolTip($U.lblAccount, $tip)
     Update-Controls
 }
 function Set-LoggedOut([string]$headline) {
@@ -337,11 +412,12 @@ function Set-LoggedOut([string]$headline) {
     $S.loggedIn = $false; $S.account = $null
     $U.lblAccount.Text = ('{0} {1}' -f $chCross, $headline)
     $U.lblAccount.ForeColor = $clRed
-    Show-Banner $false
+    $tt.SetToolTip($U.lblAccount, '')
     if ($U.lblCost.Text -eq '(loading ...)') { $U.lblCost.Text = '-' }
     if ($S.op) { Finish-Operation 'cancelled' }
-    if ($wasIn) { Write-Log ('Sign-in state lost: {0}. Auto-refresh and auto-pause are on hold until you sign in again.' -f $headline) }
-    Set-Status ("{0} - use 'Sign in'." -f $headline) 'error'
+    if ($S.apDeadline) { Clear-AutoPause; Write-Log 'Auto-pause timer cancelled (not signed in).' }
+    if ($wasIn) { Write-Log ('Sign-in state lost: {0}. Auto-refresh is on hold until you sign in again.' -f $headline) }
+    else { Write-Log ("{0} - use 'Sign in'." -f $headline) }
     Update-Controls
 }
 
@@ -393,13 +469,12 @@ function Select-Capacity($c) {
     $S.selected = $c
     Show-Card $c
     $U.lblCost.Text = if ($c) { '(loading ...)' } else { '' }
-    $U.lblUpdated.Text = 'Updated: -'
     if ($c) {
         $S.settings.lastCapacity = @{ subscriptionId = $c.subscriptionId; resourceGroup = $c.resourceGroup; name = $c.name }
         try { Save-CockpitSettings $S.settings } catch { }
         Write-Log ("Selected capacity '{0}' ({1} / {2})." -f $c.name, $c.subscriptionName, $c.resourceGroup)
+        if ($S.apDeadline) { Write-Log ('Note: the running auto-pause timer ({0:HH:mm}) now applies to this capacity.' -f $S.apDeadline) }
     }
-    Show-Banner $false
     Update-Controls
     if ($c -and $S.loggedIn) { Invoke-StatusRefresh }
 }
@@ -407,14 +482,14 @@ function Select-Capacity($c) {
 function Invoke-ListRefresh {
     if ($S.listBusy -or -not $S.loggedIn) { return }
     $S.listBusy = $true
-    Set-Status 'Loading capacities ...' 'info'
+    Write-Log 'Loading capacities ...'
     Update-Controls
     Start-Async -Work $wList -WorkArgs @($common) -OnDone {
         param($r)
         $S.listBusy = $false
         if (-not $r -or -not $r.Ok) {
             foreach ($e in @($r.Errors)) { if ($e) { Write-Log ('Capacity list: ' + $e) } }
-            if ($r.AuthError) { Set-LoggedOut 'Sign-in expired' } else { Set-Status 'Could not load capacities - see log.' 'error' }
+            if ($r.AuthError) { Set-LoggedOut 'Sign-in expired' } else { Write-Log 'Could not load capacities.' }
             Update-Controls
             return
         }
@@ -428,15 +503,14 @@ function Invoke-ListRefresh {
         $prevKey = if ($S.selected) { Get-CapKey $S.selected } else { '' }
         $kept = Populate-Combo $items $prevKey
         if ($items.Count -eq 0) {
-            Set-Status 'No Fabric capacities found. Check the signed-in account / tenant.' 'warn'
+            Write-Log 'No Fabric capacities found. Check the signed-in account / tenant.'
             Select-Capacity $null
         } elseif ($kept) {
             # keep the selection; the list record already carries a fresh state
             $S.selected = $U.cmb.SelectedItem.Record
             Show-Card $S.selected
-            Set-Status ('Capacity list updated ({0} found).' -f $items.Count) 'ok'
         } else {
-            Set-Status ('Capacity list updated ({0} found) - pick a capacity.' -f $items.Count) 'ok'
+            Write-Log ('Capacity list updated ({0} found) - pick a capacity.' -f $items.Count)
             if ($prevKey) { Write-Log 'Previously selected capacity no longer exists.' }
             Select-Capacity $null
         }
@@ -476,7 +550,7 @@ function Invoke-StatusRefresh([switch]$Silent) {
     if (-not $cap -or $S.statusBusy -or -not $S.loggedIn -or $S.op) { return }
     $S.statusBusy = $true
     $key = Get-CapKey $cap
-    if (-not $Silent) { Set-Status 'Refreshing status ...' 'info' }
+    Set-Updated 'refreshing ...'
     Update-Controls
     Start-Async -Work $wStatus -WorkArgs @($common,$cap.subscriptionId,$cap.resourceGroup,$cap.name,$cap.subscriptionName) -OnDone {
         param($r)
@@ -486,12 +560,11 @@ function Invoke-StatusRefresh([switch]$Silent) {
         if (-not $r -or -not $r.Ok) {
             Write-Log ('Status query failed: ' + $r.Error)
             if ($r.AuthError) { Set-LoggedOut 'Sign-in expired' }
-            else { Set-Status 'Status refresh failed - see log.' 'warn'; $U.lblStatus.Text = '(error)'; $U.lblStatus.ForeColor = $clRed }
+            else { Set-Updated ('refresh failed {0} - see log' -f (Get-Date).ToString('HH:mm:ss')); $U.lblStatus.Text = '(error)'; $U.lblStatus.ForeColor = $clRed }
             return
         }
         Show-Card $r.Item
-        $U.lblUpdated.Text = ('Updated: {0}' -f (Get-Date).ToString('HH:mm:ss'))
-        Set-Status ('Status: {0} (updated {1})' -f $r.Item.state, (Get-Date).ToString('HH:mm:ss')) 'info'
+        Set-Updated ('updated {0}' -f (Get-Date).ToString('HH:mm:ss'))
         if (-not $Silent) { Write-Log ('Status: {0} | SKU {1} | Provisioning {2}' -f $r.Item.state, $r.Item.sku, $r.Item.provisioningState) }
         Invoke-CostRefresh
     }.GetNewClosure()
@@ -506,10 +579,8 @@ function Start-Operation([string]$action,[string]$reason) {
     $S.opVerb   = if ($action -eq 'pause') { 'Pausing' } else { 'Resuming' }
     $S.opStart  = Get-Date; $S.opLastState = ''
     $U.lblOp.Text = $S.opVerb + ' ... (00:00)'
-    Show-Banner $false
     Update-Controls
     Write-Log ("{0} capacity '{1}' ... ({2})" -f $S.opVerb, $cap.name, $reason)
-    Set-Status ('{0} - waiting for state {1} (polling every 5s) ...' -f $S.opVerb, $S.opTarget) 'info'
     $azAction = if ($action -eq 'pause') { 'suspend' } else { 'resume' }
     Start-Async -Work $wAction -WorkArgs @($common,$azAction,$cap.subscriptionId,$cap.resourceGroup,$cap.name) -OnDone {
         param($r)
@@ -545,7 +616,7 @@ function Invoke-Poll {
             $S.opLastState = $st
         }
         Show-Card $r.Item
-        $U.lblUpdated.Text = ('Updated: {0}' -f (Get-Date).ToString('HH:mm:ss'))
+        Set-Updated ('updated {0}' -f (Get-Date).ToString('HH:mm:ss'))
         if ($st -eq $S.opTarget) { Finish-Operation 'success'; return }
         if (((Get-Date) - $S.opStart).TotalMinutes -ge 10) { Finish-Operation 'timeout' }
     }
@@ -556,17 +627,16 @@ function Finish-Operation([string]$how) {
     $dur  = Format-Elapsed ((Get-Date) - $S.opStart)
     $verb = $S.opVerb; $target = $S.opTarget
     $S.op = ''; $S.pollBusy = $false
-    Reset-Idle
     switch ($how) {
         'success'   { Write-Log ('{0} finished - state {1} reached after {2}.' -f $verb, $target, $dur)
-                      Set-Status ('{0} complete after {1}.' -f $verb, $dur) 'ok'
+                      if (-not $form.Visible) { $U.tray.ShowBalloonTip(5000, 'Fabric Cockpit', ('{0}: {1} ({2})' -f $S.selected.name, $target, $dur), [System.Windows.Forms.ToolTipIcon]::Info) }
                       Update-Controls; Invoke-StatusRefresh -Silent; return }
-        'cancelled' { Write-Log ('Waiting cancelled after {0}. The operation in Azure continues; the next refresh picks up the state.' -f $dur)
-                      Set-Status 'Waiting cancelled - the Azure operation continues.' 'warn' }
+        'cancelled' { Write-Log ('Waiting cancelled after {0}. The operation in Azure continues; the next refresh picks up the state.' -f $dur) }
         'timeout'   { $l = Get-FabricLinks -Capacity $S.selected -MetricsAppUrl $S.settings.metricsAppUrl
                       Write-Log ('Target state {0} not reached after 10 minutes. Check the status in the Azure portal: {1}' -f $target, $l.Portal)
-                      Set-Status "Target state not reached after 10 minutes. Check the Azure portal ('Capacity Overview')." 'warn' }
-        'failed'    { Set-Status ($verb + ' failed - see log.') 'error' }
+                      Set-Updated 'target state not reached after 10 min - check the portal' }
+        'failed'    { Write-Log ($verb + ' failed.')
+                      if (-not $form.Visible) { $U.tray.ShowBalloonTip(5000, 'Fabric Cockpit', ($verb + ' failed - see log.'), [System.Windows.Forms.ToolTipIcon]::Error) } }
     }
     Update-Controls
 }
@@ -575,12 +645,16 @@ function Confirm-Operation([string]$action) {
     $cap = $S.selected
     if ($action -eq 'pause') {
         $msg = "Pause capacity '$($cap.name)'?`n`nTarget state: Paused.`nAssigned workspaces are unavailable until the capacity is resumed.`nOneLake storage is still billed while paused."
-        $r = [System.Windows.Forms.MessageBox]::Show($msg, 'Confirm pause', 'YesNo', 'Warning')
+        $r = [System.Windows.Forms.MessageBox]::Show($msg, 'Confirm pause', 'YesNo', 'Warning', 'Button1', 'DefaultDesktopOnly')
     } else {
         $msg = "Resume capacity '$($cap.name)'?`n`nTarget state: Active.`nCompute billing starts again as soon as the capacity is active."
-        $r = [System.Windows.Forms.MessageBox]::Show($msg, 'Confirm resume', 'YesNo', 'Question')
+        $r = [System.Windows.Forms.MessageBox]::Show($msg, 'Confirm resume', 'YesNo', 'Question', 'Button1', 'DefaultDesktopOnly')
     }
     return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
+}
+function Request-Operation([string]$action) {
+    if ($S.op -or -not $S.selected -or -not $S.loggedIn) { return }
+    if (Confirm-Operation $action) { Start-Operation $action 'manual' }
 }
 
 # ---------- sign-in ----------
@@ -589,7 +663,6 @@ function Invoke-Login {
     $S.loginBusy = $true
     $U.lblAccount.Text = 'Signing in - please complete the sign-in in the browser window ...'
     $U.lblAccount.ForeColor = $clAmber
-    Set-Status "Running 'az login' - a browser window opens." 'info'
     Write-Log "Starting 'az login' - complete the sign-in in the browser."
     Update-Controls
     Start-Async -Work $wLogin -WorkArgs @($common) -OnDone {
@@ -598,7 +671,6 @@ function Invoke-Login {
         if ($r -and $r.Account -and $r.Account.LoggedIn) {
             Set-LoggedIn $r.Account
             Write-Log ('Signed in as {0} (tenant {1}).' -f $r.Account.User, $r.Account.TenantId)
-            Set-Status 'Signed in.' 'ok'
             Invoke-ListRefresh
             if ($S.selected) { Invoke-StatusRefresh }
         } else {
@@ -609,69 +681,96 @@ function Invoke-Login {
     }
 }
 
-# ---------- auto-pause ----------
+# ---------- auto-pause timer ----------
+function Clear-AutoPause {
+    $S.apDeadline = $null; $S.apMinutes = 0
+    $S.loading = $true; $U.cmbAutoPause.SelectedIndex = 0; $S.loading = $false
+    $U.lblApCountdown.Text = ''
+    Show-Banner $false
+    Update-Tray
+}
+function Set-AutoPause([int]$minutes) {
+    $S.apMinutes = $minutes
+    $S.apDeadline = (Get-Date).AddMinutes($minutes)
+    Show-Banner $false
+    Write-Log ("Auto-pause set: capacity '{0}' will be paused at {1:HH:mm} (in {2} min)." -f $S.selected.name, $S.apDeadline, $minutes)
+    if ($S.status -eq 'Paused') { Write-Log 'Note: the capacity is currently paused; the timer runs anyway.' }
+    Update-AutoPause
+    Update-Tray
+}
 function Update-AutoPause {
-    $mins = [int]$S.settings.autoPauseMinutes
-    if ($S.op) { Reset-Idle }
-    $active = ($mins -gt 0) -and (-not $S.autoPauseOff) -and $S.loggedIn -and ($null -ne $S.selected) -and ($S.status -eq 'Active') -and (-not $S.op)
-    if (-not $active) { if ($pnlBanner.Visible) { Show-Banner $false }; return }
-    $remaining = [timespan]::FromMinutes($mins) - ((Get-Date) - $S.idleSince)
-    if ($remaining.TotalSeconds -le 0) {
-        Show-Banner $false
-        Reset-Idle
-        Start-Operation 'pause' ('Auto-pause after {0} min of cockpit inactivity' -f $mins)
+    if (-not $S.apDeadline) { return }
+    $rem = $S.apDeadline - (Get-Date)
+    if ($rem.TotalSeconds -le 0) {
+        if ($S.op) { $U.lblApCountdown.Text = 'waiting for the running operation ...'; return }
+        $m = $S.apMinutes
+        Clear-AutoPause
+        if (-not $S.loggedIn -or -not $S.selected) { Write-Log 'Auto-pause timer elapsed - skipped (not signed in / no capacity).'; return }
+        if ($S.status -eq 'Paused') { Write-Log 'Auto-pause timer elapsed - capacity is already paused.'; return }
+        Start-Operation 'pause' ('Auto-pause timer, {0} min' -f $m)
         return
     }
-    if ($remaining.TotalSeconds -le 120) {
-        $U.lblBanner.Text = 'Auto-pause in ' + (Format-Elapsed $remaining)
-        if (-not $pnlBanner.Visible) { Show-Banner $true; Write-Log ('Auto-pause warning: pausing in {0} unless you interact.' -f (Format-Elapsed $remaining)) }
+    $U.lblApCountdown.Text = ('pauses at {0:HH:mm} (in {1})' -f $S.apDeadline, (Format-Elapsed $rem))
+    if ($rem.TotalSeconds -le 120) {
+        $U.lblBanner.Text = 'Auto-pause in ' + (Format-Elapsed $rem)
+        if (-not $pnlBanner.Visible) {
+            Show-Banner $true
+            Write-Log ('Auto-pause warning: pausing in {0}.' -f (Format-Elapsed $rem))
+            if (-not $form.Visible) { $U.tray.ShowBalloonTip(10000, 'Fabric Cockpit', ("Auto-pause of '{0}' in 2 minutes." -f $S.selected.name), [System.Windows.Forms.ToolTipIcon]::Warning) }
+        }
     } elseif ($pnlBanner.Visible) { Show-Banner $false }
 }
 
+# ---------- window show / hide (tray) ----------
+function Show-Window {
+    $form.Show()
+    if ($form.WindowState -eq 'Minimized') { $form.WindowState = 'Normal' }
+    $form.Activate()
+}
+function Hide-Window {
+    $form.Hide()
+    if (-not $S.trayHintShown) {
+        $S.trayHintShown = $true
+        $U.tray.ShowBalloonTip(4000, 'Fabric Cockpit', "Still running in the tray. Use 'Exit' in the tray menu to quit.", [System.Windows.Forms.ToolTipIcon]::Info)
+    }
+}
+
 # ---------- handlers ----------
-$U.btnLogin.Add_Click({ Reset-Idle; Invoke-Login })
-$U.btnReload.Add_Click({ Reset-Idle; Invoke-ListRefresh })
-$U.btnRefresh.Add_Click({ Reset-Idle; Invoke-StatusRefresh })
+$U.btnLogin.Add_Click({ Invoke-Login })
+$U.btnReload.Add_Click({ Invoke-ListRefresh })
+$U.btnRefresh.Add_Click({ Invoke-StatusRefresh })
 
 $U.cmb.Add_SelectedIndexChanged({
     if ($S.loading) { return }
-    Reset-Idle
     $it = $U.cmb.SelectedItem
     Select-Capacity $(if ($it) { $it.Record } else { $null })
 })
 
-$U.btnResume.Add_Click({
-    Reset-Idle
-    if ($S.op -or -not $S.selected) { return }
-    if (Confirm-Operation 'resume') { Start-Operation 'resume' 'manual' }
-})
-$U.btnPause.Add_Click({
-    Reset-Idle
-    if ($S.op -or -not $S.selected) { return }
-    if (Confirm-Operation 'pause') { Start-Operation 'pause' 'manual' }
-})
-$U.btnStopWait.Add_Click({ Reset-Idle; if ($S.op) { Finish-Operation 'cancelled' } })
+$U.btnResume.Add_Click({ Request-Operation 'resume' })
+$U.btnPause.Add_Click({  Request-Operation 'pause' })
+$U.btnStopWait.Add_Click({ if ($S.op) { Finish-Operation 'cancelled' } })
 
-$U.btnApNow.Add_Click({ Reset-Idle; Show-Banner $false; Start-Operation 'pause' 'auto-pause warning: Pause now' })
-$U.btnApExtend.Add_Click({ Reset-Idle; Show-Banner $false; Write-Log ('Auto-pause extended - timer reset to {0} min.' -f [int]$S.settings.autoPauseMinutes) })
-$U.btnApOff.Add_Click({ Reset-Idle; $S.autoPauseOff = $true; Show-Banner $false; Write-Log 'Auto-pause disabled for today (until the cockpit is restarted).'; Set-Status 'Auto-pause disabled until restart.' 'warn' })
+$U.btnApNow.Add_Click({ Clear-AutoPause; Write-Log 'Auto-pause: pausing now on request.'; Start-Operation 'pause' 'auto-pause banner: Pause now' })
+$U.btnApExtend.Add_Click({
+    if (-not $S.apDeadline) { return }
+    $S.apDeadline = $S.apDeadline.AddMinutes($S.apMinutes)
+    Show-Banner $false
+    Write-Log ('Auto-pause postponed by {0} min - now at {1:HH:mm}.' -f $S.apMinutes, $S.apDeadline)
+    Update-AutoPause; Update-Tray
+})
+$U.btnApCancel.Add_Click({ Clear-AutoPause; Write-Log 'Auto-pause cancelled.' })
 
 $U.cmbAutoPause.Add_SelectedIndexChanged({
     if ($S.loading) { return }
-    Reset-Idle
     $m = [int]$S.apValues[[math]::Max(0, $U.cmbAutoPause.SelectedIndex)]
-    if ([int]$S.settings.autoPauseMinutes -eq $m) { return }
-    $S.settings.autoPauseMinutes = $m
-    $S.autoPauseOff = $false
-    try { Save-CockpitSettings $S.settings } catch { }
-    Write-Log $(if ($m -gt 0) { ('Auto-pause set to {0} min of cockpit inactivity.' -f $m) } else { 'Auto-pause switched off.' })
-    Show-Banner $false
+    if ($m -le 0) { if ($S.apDeadline) { Clear-AutoPause; Write-Log 'Auto-pause cancelled.' } ; return }
+    if (-not $S.selected) { Clear-AutoPause; return }
+    Set-AutoPause $m
 })
 
-$U.chkAuto.Add_CheckedChanged({ Reset-Idle; if ($U.chkAuto.Checked) { $T.auto.Start() } else { $T.auto.Stop() } })
+$U.chkAuto.Add_CheckedChanged({ if ($U.chkAuto.Checked) { $T.auto.Start() } else { $T.auto.Stop() } })
 
 function Open-Link([string]$which,[string]$label) {
-    Reset-Idle
     if (-not $S.selected) { return }
     try {
         $l = Get-FabricLinks -Capacity $S.selected -MetricsAppUrl $S.settings.metricsAppUrl
@@ -684,15 +783,21 @@ $U.btnCostA.Add_Click({   Open-Link 'Cost'    'cost analysis (RG)' })
 $U.btnMetrics.Add_Click({ Open-Link 'Metrics' 'Metrics app' })
 
 $U.btnCopyLog.Add_Click({
-    Reset-Idle
-    try { [System.Windows.Forms.Clipboard]::SetText($U.txtLog.Text); Set-Status 'Log copied to clipboard.' 'ok' }
-    catch { Set-Status ('Copy failed: ' + $_.Exception.Message) 'error' }
+    try { [System.Windows.Forms.Clipboard]::SetText($U.txtLog.Text); Write-Log 'Log copied to clipboard.' }
+    catch { Write-Log ('Copy failed: ' + $_.Exception.Message) }
 })
+
+# tray
+$U.miOpen.Add_Click({ Show-Window })
+$U.tray.Add_DoubleClick({ Show-Window })
+$U.miResume.Add_Click({ Request-Operation 'resume' })
+$U.miPause.Add_Click({  Request-Operation 'pause' })
+$U.miExit.Add_Click({ $S.exiting = $true; $form.Close() })
 
 # ---------- timers ----------
 $T.auto = New-Object System.Windows.Forms.Timer
 $T.auto.Interval = [int]$S.settings.autoRefreshSeconds * 1000
-$T.auto.Add_Tick({ Invoke-StatusRefresh -Silent })   # deliberately does NOT reset the inactivity timer
+$T.auto.Add_Tick({ Invoke-StatusRefresh -Silent })
 
 $T.poll = New-Object System.Windows.Forms.Timer
 $T.poll.Interval = 5000
@@ -707,17 +812,7 @@ $T.ui.Add_Tick({
 
 # ---------- startup ----------
 $form.Add_Shown({
-    $S.loading = $true
-    $m = [int]$S.settings.autoPauseMinutes
-    $idx = [array]::IndexOf($S.apValues, $m)
-    if ($idx -lt 0) {
-        if ($m -gt 0) {   # custom value from settings.json (e.g. for testing) - show it honestly
-            [void]$U.cmbAutoPause.Items.Add(('{0} minutes (custom)' -f $m)); $S.apValues += $m; $idx = $S.apValues.Count - 1
-        } else { $idx = 0; $S.settings.autoPauseMinutes = 0 }
-    }
-    $U.cmbAutoPause.SelectedIndex = $idx
-    $S.loading = $false
-
+    $S.loading = $true; $U.cmbAutoPause.SelectedIndex = 0; $S.loading = $false
     Show-Card $null
     Write-Log ('Settings: ' + (Get-CockpitSettingsPath))
     $cache = @($S.settings.capacityCache)
@@ -726,7 +821,7 @@ $form.Add_Shown({
     if ($cache.Count -gt 0) {
         $found = Populate-Combo $cache $lastKey
         Write-Log ('Loaded {0} capacity(ies) from cache (updated {1}).' -f $cache.Count, $S.settings.capacityCacheUpdated)
-        if ($found) { $S.selected = $U.cmb.SelectedItem.Record; Show-Card $S.selected; $U.lblCost.Text = '(loading ...)'; $U.lblUpdated.Text = 'Updated: - (cached)' }
+        if ($found) { $S.selected = $U.cmb.SelectedItem.Record; Show-Card $S.selected; $U.lblCost.Text = '(loading ...)'; Set-Updated 'cached' }
     } elseif ($lastKey) {
         # no cache yet, but a last capacity is known (e.g. migrated settings) - show it until the list arrives
         $rec = [pscustomobject]@{ name = $lc.name; id = ''; subscriptionId = $lc.subscriptionId; subscriptionName = ''; resourceGroup = $lc.resourceGroup; location = ''; sku = ''; state = ''; provisioningState = '' }
@@ -739,11 +834,9 @@ $form.Add_Shown({
 
     if (-not $S.azOk) {
         Set-LoggedOut 'Azure CLI (az) not found'
-        Set-Status 'Install the Azure CLI from https://aka.ms/installazurecli and restart the cockpit.' 'error'
-        Write-Log 'Azure CLI (az) was not found in PATH.'
+        Write-Log 'Install the Azure CLI from https://aka.ms/installazurecli and restart the cockpit.'
         return
     }
-    Set-Status 'Checking sign-in ...' 'info'
     Start-Async -Work $wAccount -WorkArgs @($common) -OnDone {
         param($r)
         if ($r -and -not $r.ExtOk) { Write-Log "Warning: az extension 'microsoft-fabric' could not be installed - capacity commands will fail." }
@@ -760,10 +853,17 @@ $form.Add_Shown({
     }
 })
 
-$form.Add_FormClosing({
+$form.Add_FormClosing({ param($sender,$e)
+    if (-not $S.exiting -and $e.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing) {
+        $e.Cancel = $true
+        Hide-Window
+        return
+    }
     foreach ($t in $T.Values) { try { $t.Stop() } catch { } }
     try { Save-CockpitSettings $S.settings } catch { }
+    $U.tray.Visible = $false
 })
 
-[void]$form.ShowDialog()
+[System.Windows.Forms.Application]::Run($form)
+$U.tray.Dispose()
 foreach ($t in $T.Values) { try { $t.Dispose() } catch { } }

@@ -460,3 +460,18 @@ sich eine Annahme nicht auflösen lässt, im Code kommentieren und hier vermerke
 - **§6.2** Kopfzeile zeigt Benutzer und Tenant; die Subscription steht in der Info-Karte der gewählten Kapazität.
 - **Sprache** der Oberfläche: Englisch (wie Bestand).
 
+### Änderungen vom 15.09.2026 (Auftraggeber)
+
+- **§8 Auto-Pause** ersetzt: statt „Inaktivität des Cockpits" ein einfacher
+  **Countdown** (`in 15 | 30 | 60 | 120 min`), der ab Auswahl läuft und die gewählte
+  Kapazität unabhängig von Cockpit- oder Kapazitätsaktivität pausiert. Das Cockpit
+  muss nur laufen (Fenster oder Tray). Einmalig, nicht persistiert; Warnbanner 2 min
+  vorher mit *Pause now / Extend / Cancel* bleibt, im Tray zusätzlich Ballon-Hinweis.
+- **§9.2 Statuszeile** entfällt wieder; Aktualisierungszeitpunkt steht in der
+  Info-Karte neben dem Status, Meldungen gehen ins Log. Log-Bereich halbiert.
+- **Layout**: Anmeldezeile als abgesetztes Band; Abschnitte „Capacity actions:" (Resume,
+  Pause, Auto-Pause) und „Click here for details:" (Links); einheitliche Buttonmaße.
+- **Neu: Tray-Betrieb** - NotifyIcon mit zustandsabhängiger Farbe, Tooltip und
+  Kontextmenü (Open cockpit / Resume / Pause / Exit). X versteckt ins Tray, Beenden
+  über *Exit*.
+

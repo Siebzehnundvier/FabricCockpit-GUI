@@ -16,7 +16,6 @@ function Get-CockpitSettings {
     $d = [ordered]@{
         lastCapacity         = @{ subscriptionId = ''; resourceGroup = ''; name = '' }
         autoRefreshSeconds   = 30
-        autoPauseMinutes     = 0
         metricsAppUrl        = ''
         capacityCache        = @()
         capacityCacheUpdated = ''
