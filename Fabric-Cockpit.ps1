@@ -231,9 +231,11 @@ New-Label $card 'Capacity Info' 12 10 200 22 $clLegend $fLegend | Out-Null
 $UI.chkAuto = New-Object System.Windows.Forms.CheckBox
 $UI.chkAuto.Text = ('Auto-refresh ({0}s)' -f [int]$ST.settings.autoRefreshSeconds)
 $UI.chkAuto.ForeColor = $clInk; $UI.chkAuto.Font = $fCap
-$UI.chkAuto.Location = New-Object System.Drawing.Point(($card.Width-12-160), 10); $UI.chkAuto.Size = New-Object System.Drawing.Size(160, 24)
+$UI.chkAuto.AutoSize = $true
 $UI.chkAuto.Anchor = 'Top,Right'
 $card.Controls.Add($UI.chkAuto)
+# right edge flush with the Refresh button below (AutoSize first, then position by measured width)
+$UI.chkAuto.Location = New-Object System.Drawing.Point(($card.Width-12-$UI.chkAuto.Width), 10)
 $UI.btnRefresh = New-FlatButton $card 'Refresh' ($card.Width-12-100) 40 100 $SBH $clBtnTxt 'Top,Right'
 $tt.SetToolTip($UI.btnRefresh, 'Reload status and cost of the selected capacity')
 
