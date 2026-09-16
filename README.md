@@ -95,7 +95,10 @@ the next start.
 **Capacity Info** - name, subscription, resource group, region, SKU, status with the
 time of the last refresh in brackets, provisioning state and the **month-to-date
 cost of this capacity** (Cost Management query at resource level, cached 10 minutes,
-retried on throttling). Refreshes every 30 s (checkbox) or via **Refresh**.
+retried on throttling). The figure is the sum of all meters billed to the capacity;
+the OneLake storage share is shown in brackets, e.g. `12.34 € (of which storage 0.87 €)`,
+because that part keeps accruing while the capacity is paused. Refreshes every 30 s
+(checkbox) or via **Refresh**.
 
 **Resume / Pause** - confirmation dialog (the pause dialog repeats the storage and
 workspace hint), then the command is sent with `--no-wait` and the state is

@@ -10,7 +10,7 @@
 
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
-$CockpitVersion = '1.0.0'
+$CockpitVersion = '0.51.0'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -257,7 +257,7 @@ $UI.lblUpdated.AutoSize = $true
 $y += $step
 $UI.lblProv   = New-CardRow 'Provisioning'   $y; $y += $step
 $UI.lblCost   = New-CardRow 'Cost (MTD)'     $y; $y += $step
-$tt.SetToolTip($UI.lblCost, 'Month-to-date cost of this capacity (Cost Management, resource-level). Data has latency of up to ~24-48h.')
+$tt.SetToolTip($UI.lblCost, 'Month-to-date cost of this capacity (Cost Management, resource-level): compute (CU meters) plus OneLake storage. The storage share keeps accruing while the capacity is paused. Data has latency of up to ~24-48h.')
 
 # ---------- row 3: capacity actions ----------
 New-Heading $pnlActions 'Capacity actions:' 6 | Out-Null
@@ -558,7 +558,9 @@ function Invoke-CostRefresh {
         }
         $suffix = if ($r.FromCache) { (' (cached {0:HH:mm})' -f $r.AsOf) } else { '' }
         if ($null -ne $r.FabricCost) {
-            $UI.lblCost.Text = ('{0} {1}{2}' -f ([double]$r.FabricCost).ToString('N2'), (Format-Currency $r.FabricCurrency), $suffix)
+            $cur = Format-Currency $r.FabricCurrency
+            $storage = if ($null -ne $r.FabricStorageCost) { (' (of which storage {0} {1})' -f ([double]$r.FabricStorageCost).ToString('N2'), $cur) } else { '' }
+            $UI.lblCost.Text = ('{0} {1}{2}{3}' -f ([double]$r.FabricCost).ToString('N2'), $cur, $storage, $suffix)
         } elseif (-not $r.Rows -or $r.Rows.Count -eq 0) {
             $UI.lblCost.Text = 'no data yet (latency ~24-48h)'
         } else {

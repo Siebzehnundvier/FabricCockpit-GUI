@@ -1,6 +1,8 @@
 # Fabric-Cost.ps1 - reusable cost query used by the GUI (Fabric-Cockpit.ps1).
 # Defines Invoke-FabricCostQuery, which returns an object (no console output),
 # with a local cache and 429 retry. Uses the built-in 'az rest'.
+# Rows are aggregated per resource; for the Fabric capacity the cost is also
+# split into compute (CU meters) and storage (OneLake meters) via FabricMeters.
 
 function Invoke-FabricCostQuery {
     param(
@@ -14,6 +16,7 @@ function Invoke-FabricCostQuery {
     $result = [ordered]@{
         Ok = $false; FromCache = $false; AsOf = (Get-Date)
         FabricCost = $null; FabricCurrency = ''; Total = $null; Currency = ''
+        FabricComputeCost = $null; FabricStorageCost = $null; FabricMeters = @()
         Rows = @(); Throttled = $false; Error = ''
     }
 
@@ -30,7 +33,7 @@ function Invoke-FabricCostQuery {
     $scope     = "/subscriptions/$subId/resourceGroups/$ResourceGroup"
     $uri       = "https://management.azure.com$scope/providers/Microsoft.CostManagement/query?api-version=2024-08-01"
     $cacheKey  = ("{0}_{1}" -f $subId, $ResourceGroup) -replace '[^A-Za-z0-9_]', '_'
-    $cacheFile = Join-Path $TempDir ("fabcost_cache_{0}.json" -f $cacheKey)
+    $cacheFile = Join-Path $TempDir ("fabcost_cache_v2_{0}.json" -f $cacheKey)
 
     $rawJson = $null; $fromCache = $false; $asOf = (Get-Date)
 
@@ -49,7 +52,10 @@ function Invoke-FabricCostQuery {
             dataset   = @{
                 granularity = 'None'
                 aggregation = @{ totalCost = @{ name = 'Cost'; function = 'Sum' } }
-                grouping    = @(@{ type = 'Dimension'; name = 'ResourceId' })
+                grouping    = @(
+                    @{ type = 'Dimension'; name = 'ResourceId' },
+                    @{ type = 'Dimension'; name = 'Meter' }
+                )
             }
         }
         $body = $bodyObj | ConvertTo-Json -Depth 10
@@ -87,23 +93,53 @@ function Invoke-FabricCostQuery {
         $ciCost = [array]::IndexOf($cols,'Cost'); if ($ciCost -lt 0) { $ciCost = [array]::IndexOf($cols,'PreTaxCost') }
         $ciRes  = [array]::IndexOf($cols,'ResourceId')
         $ciCur  = [array]::IndexOf($cols,'Currency')
+        $ciMet  = [array]::IndexOf($cols,'Meter')
 
-        $rows = @()
+        # one row per (ResourceId, Meter) -> aggregate per resource, keep the
+        # meters of the Fabric capacity for the compute/storage split
+        $byRes = [ordered]@{}
+        $meters = @()
         if ($ciCost -ge 0 -and $q.rows) {
             foreach ($r in $q.rows) {
                 $resId = if ($ciRes -ge 0) { [string]$r[$ciRes] } else { '' }
-                $short = if ($resId) { ($resId -split '/')[-1] } else { '(total)' }
-                $rows += [pscustomobject]@{
-                    Resource = $short
-                    Cost     = [math]::Round([double]$r[$ciCost],2)
-                    Currency = if ($ciCur -ge 0) { [string]$r[$ciCur] } else { '' }
-                    IsFabric = ($resId -like "*/Microsoft.Fabric/capacities/$CapacityName")
+                $cost  = [double]$r[$ciCost]
+                $cur   = if ($ciCur -ge 0) { [string]$r[$ciCur] } else { '' }
+                $meter = if ($ciMet -ge 0) { [string]$r[$ciMet] } else { '' }
+                $isFab = ($resId -like "*/Microsoft.Fabric/capacities/$CapacityName")
+                if (-not $byRes.Contains($resId)) {
+                    $byRes[$resId] = [pscustomobject]@{
+                        Resource = if ($resId) { ($resId -split '/')[-1] } else { '(total)' }
+                        Cost     = 0.0
+                        Currency = $cur
+                        IsFabric = $isFab
+                    }
+                }
+                $byRes[$resId].Cost += $cost
+                if ($isFab) {
+                    $meters += [pscustomobject]@{
+                        Meter     = $meter
+                        Cost      = [math]::Round($cost,2)
+                        Currency  = $cur
+                        # stored-data meters (e.g. 'OneLake Storage Hot Data Stored', BCDR) count as
+                        # storage; anything billed in CU (incl. OneLake read/write ops) is compute
+                        IsStorage = ($meter -match 'OneLake|Storage' -and $meter -notmatch 'Capacity Usage|CU')
+                    }
                 }
             }
         }
+        $rows = @($byRes.Values | ForEach-Object { $_.Cost = [math]::Round($_.Cost,2); $_ })
         $result.Rows = $rows
+        $result.FabricMeters = $meters
         $fab = $rows | Where-Object IsFabric | Select-Object -First 1
-        if ($fab) { $result.FabricCost = $fab.Cost; $result.FabricCurrency = $fab.Currency }
+        if ($fab) {
+            $result.FabricCost = $fab.Cost; $result.FabricCurrency = $fab.Currency
+            if ($ciMet -ge 0) {
+                $sto = ($meters | Where-Object IsStorage      | Measure-Object Cost -Sum).Sum
+                $cmp = ($meters | Where-Object { -not $_.IsStorage } | Measure-Object Cost -Sum).Sum
+                $result.FabricStorageCost = [math]::Round([double]$sto,2)
+                $result.FabricComputeCost = [math]::Round([double]$cmp,2)
+            }
+        }
         $result.Total = if ($rows -and $rows.Count -gt 0) { [math]::Round((($rows | Measure-Object Cost -Sum).Sum),2) } else { 0 }
         if ($rows -and $rows.Count -gt 0 -and $rows[0].Currency) { $result.Currency = $rows[0].Currency }
         $result.Ok = $true; $result.FromCache = $fromCache; $result.AsOf = $asOf
