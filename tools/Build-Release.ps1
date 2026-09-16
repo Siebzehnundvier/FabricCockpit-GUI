@@ -11,7 +11,7 @@ $stage = Join-Path $env:TEMP $name
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path (Join-Path $stage 'lib') | Out-Null
 
-$files = @('Fabric-Cockpit.ps1', 'Start-Cockpit.cmd', 'Start-Cockpit.vbs', 'README.md', 'LICENSE',
+$files = @('Fabric-Cockpit.ps1', 'Start-Cockpit.cmd', 'Start-Cockpit.vbs', 'README.md', 'CHANGELOG.md', 'LICENSE',
            'lib\Fabric-Common.ps1', 'lib\Fabric-Cost.ps1')
 foreach ($f in $files) { Copy-Item (Join-Path $root $f) (Join-Path $stage $f) }
 

@@ -239,13 +239,14 @@ Created on first start; no secrets. Delete the file to reset the cockpit.
 | `LICENSE` | MIT license incl. warranty disclaimer |
 | `README.md` | This file |
 | `tools/Build-Release.ps1` | Packs the distributable files into a versioned zip (development only) |
+| `CHANGELOG.md` | Version history |
 | `docs/` | Internal specification and verification notes (development only, not shipped) |
 
 ## Distributing the tool
 
 Ship the zip produced by `tools/Build-Release.ps1` - it contains exactly:
 `Fabric-Cockpit.ps1`, `Start-Cockpit.cmd`, `Start-Cockpit.vbs`, `lib\*.ps1`,
-`README.md`, `LICENSE`. The script refuses to build if any file contains something
+`README.md`, `CHANGELOG.md`, `LICENSE`. The script refuses to build if any file contains something
 that looks like a tenant/subscription id or a local user path. `docs/`, `tools/`,
 `.git` and your `settings.json` are never included. The version number lives in
 `$CockpitVersion` at the top of `Fabric-Cockpit.ps1` and is written to the log on

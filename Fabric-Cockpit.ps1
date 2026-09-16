@@ -10,7 +10,7 @@
 
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
-$CockpitVersion = '0.51.0'
+$CockpitVersion = '0.52.0'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -240,12 +240,14 @@ $UI.chkAuto.Location = New-Object System.Drawing.Point(($card.Width-12-$UI.chkAu
 $UI.btnRefresh = New-FlatButton $card 'Refresh' ($card.Width-12-100) 40 100 $SBH $clBtnTxt 'Top,Right'
 $tt.SetToolTip($UI.btnRefresh, 'Reload status and cost of the selected capacity')
 
-function New-CardRow([string]$caption,[int]$y) {
+# value labels span the card width (anchored right, so they grow with the window);
+# the Name row stops short of the Refresh button that sits in the same line
+function New-CardRow([string]$caption,[int]$y,[int]$w = ($card.Width-148-12)) {
     New-Label $card $caption 14 $y 128 22 $clMuted $fCap | Out-Null
-    return (New-Label $card '' 148 $y 300 22 $clInk $fVal)
+    return (New-Label $card '' 148 $y $w 22 $clInk $fVal 'Top,Left,Right')
 }
 $y = 42; $step = 25
-$UI.lblName   = New-CardRow 'Name'           $y; $y += $step
+$UI.lblName   = New-CardRow 'Name'           $y ($card.Width-148-12-100-$GAP); $y += $step
 $UI.lblSub    = New-CardRow 'Subscription'   $y; $y += $step
 $UI.lblRg     = New-CardRow 'Resource group' $y; $y += $step
 $UI.lblRegion = New-CardRow 'Region'         $y; $y += $step
