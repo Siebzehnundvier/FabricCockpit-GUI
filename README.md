@@ -6,6 +6,10 @@ see **status / SKU / month-to-date cost**, **Pause** / **Resume** with live prog
 an **auto-pause timer**, a **tray icon** with state colour and menu, and direct
 links to the portal, cost analysis and the Metrics app.
 
+![Fabric Capacity Cockpit window](assets/cockpit.png)
+
+**Download:** the latest zip is on the [Releases](../../releases/latest) page.
+
 > Designed for F-SKUs with pay-as-you-go billing. Pausing saves the compute cost;
 > OneLake storage is still billed. With an existing reservation, pausing yields no
 > savings - this tool cannot detect reservations.
@@ -127,6 +131,8 @@ polling) keeps running; **Exit** in the tray menu quits. Double-click the icon t
 bring the window back. Resume/Pause from the tray ask for the same confirmation as
 the buttons.
 
+![Tray icon menu](assets/tray.png)
+
 **Click here for details** - **Capacity Overview** (Azure portal), **Cost Analysis
 (RG)** (cost analysis scoped to the capacity's resource group) and **Metrics App**
 (`metricsAppUrl` from `settings.json`, or the Power BI Apps page).
@@ -241,6 +247,7 @@ Created on first start; no secrets. Delete the file to reset the cockpit.
 | `tools/Build-Release.ps1` | Packs the distributable files into a versioned zip (development only) |
 | `CHANGELOG.md` | Version history |
 | `docs/` | Internal specification and verification notes (development only, not shipped) |
+| `assets/` | Screenshots for this README (repository only, not shipped) |
 
 ## Distributing the tool
 
@@ -248,7 +255,7 @@ Ship the zip produced by `tools/Build-Release.ps1` - it contains exactly:
 `Fabric-Cockpit.ps1`, `Start-Cockpit.cmd`, `Start-Cockpit.vbs`, `lib\*.ps1`,
 `README.md`, `CHANGELOG.md`, `LICENSE`. The script refuses to build if any file contains something
 that looks like a tenant/subscription id or a local user path. `docs/`, `tools/`,
-`.git` and your `settings.json` are never included. The version number lives in
+`assets/`, `.git` and your `settings.json` are never included. The version number lives in
 `$CockpitVersion` at the top of `Fabric-Cockpit.ps1` and is written to the log on
 every start - bump it before you build.
 
