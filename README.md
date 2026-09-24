@@ -279,5 +279,3 @@ product and is not affiliated with or endorsed by Microsoft.
 - Verified 2026-09-13 against az 2.90.0 / microsoft-fabric 1.0.0b1: capacity
   states `Paused -> Resuming -> Active`, `Active -> Pausing -> Paused`; the CLI
   blocks without `--no-wait`. Details in `docs/`.
-- The same core actions as VS Code tasks / status-bar buttons live in the separate
-  `FabricCockpit-VSCode` project (own repository, own configuration).
